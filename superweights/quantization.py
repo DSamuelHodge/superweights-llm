@@ -313,3 +313,153 @@ def clip_outliers(
         clipped[outlier_mask] = mean_value
         
     return clipped
+
+
+def scale_superweights(
+    tensor: torch.Tensor,
+    superweight_mask: torch.Tensor,
+    scale_factor: float = 1.0,
+    per_block: bool = False,
+    blocksize: int = 16
+) -> torch.Tensor:
+    """Scale identified superweights by a specified factor.
+    
+    Args:
+        tensor: Input tensor containing weights
+        superweight_mask: Boolean mask indicating superweight positions
+        scale_factor: Factor to scale superweights by
+        per_block: Whether to apply scaling per block
+        blocksize: Block size when using per_block=True
+        
+    Returns:
+        Tensor with scaled superweights
+    """
+    scaled = tensor.clone()
+    if per_block and len(tensor.shape) == 2:
+        rows, cols = tensor.shape
+        # Pad if necessary
+        pad_rows = (blocksize - rows % blocksize) % blocksize
+        pad_cols = (blocksize - cols % blocksize) % blocksize
+        if pad_rows > 0 or pad_cols > 0:
+            scaled = torch.nn.functional.pad(scaled, (0, pad_cols, 0, pad_rows))
+            superweight_mask = torch.nn.functional.pad(superweight_mask, (0, pad_cols, 0, pad_rows))
+        
+        # Process blocks
+        for i in range(0, scaled.shape[0], blocksize):
+            for j in range(0, scaled.shape[1], blocksize):
+                block = scaled[i:i+blocksize, j:j+blocksize]
+                mask = superweight_mask[i:i+blocksize, j:j+blocksize]
+                if mask.any():
+                    # Calculate original mean
+                    original_mean = block.mean()
+                    
+                    # Scale superweights
+                    block[mask] *= scale_factor
+                    
+                    # Adjust non-superweights to preserve mean if there are any
+                    if (~mask).any():
+                        # Calculate current weighted sum
+                        super_sum = block[mask].sum()
+                        non_super_count = (~mask).sum()
+                        
+                        # Solve for x: (super_sum + x * non_super_count) / total_count = original_mean
+                        # where x is the value for non-superweights
+                        total_count = block.numel()
+                        target_sum = original_mean * total_count
+                        non_super_value = (target_sum - super_sum) / non_super_count
+                        block[~mask] = non_super_value
+        
+        # Remove padding if added
+        if pad_rows > 0 or pad_cols > 0:
+            scaled = scaled[:rows, :cols]
+    else:
+        scaled[superweight_mask] *= scale_factor
+        
+    return scaled
+
+
+def quantize_with_superweights(
+    weight: torch.Tensor,
+    bits: int = 4,
+    blocksize: int = 16,
+    superweight_threshold: float = 0.1,
+    superweight_method: str = "block_percentage",
+    preserve_superweights: bool = True,
+    scale_factor: float = 1.0
+) -> Tuple[torch.Tensor, torch.Tensor, int]:
+    """Quantize weights while handling superweights specially.
+    
+    Args:
+        weight: Input tensor to quantize
+        bits: Number of bits for quantization
+        blocksize: Size of blocks for blockwise quantization
+        superweight_threshold: Threshold for superweight detection
+        superweight_method: Method to detect superweights
+        preserve_superweights: Whether to preserve original superweight values
+        scale_factor: Factor to scale superweights by if not preserving originals
+        
+    Returns:
+        Tuple of (quantized tensor, superweight mask, number of superweights)
+    """
+    if bits <= 0 or bits > 8:
+        raise ValueError("Number of bits must be between 1 and 8")
+    if blocksize <= 0:
+        raise ValueError("Block size must be positive")
+    if superweight_method not in ["block_percentage", "global_percentage", "absolute"]:
+        raise ValueError("Invalid superweight detection method")
+        
+    # Find superweights
+    superweight_mask = find_outliers(
+        weight,
+        method=superweight_method,
+        threshold=superweight_threshold,
+        blocksize=blocksize
+    )
+    num_superweights = int(superweight_mask.sum().item())
+    
+    if preserve_superweights:
+        # Quantize non-superweights
+        quantized = weight.clone()
+        non_super_mask = ~superweight_mask
+        if non_super_mask.any():
+            non_super_weights = weight[non_super_mask]
+            quantized_weights, _ = quantize_blockwise(
+                non_super_weights,
+                bits=bits,
+                blocksize=blocksize
+            )
+            quantized[non_super_mask] = quantized_weights
+    else:
+        # Quantize all weights
+        quantized, _ = quantize_blockwise(weight, bits=bits, blocksize=blocksize)
+        # Scale superweights
+        if num_superweights > 0:
+            quantized = scale_superweights(
+                quantized,
+                superweight_mask,
+                scale_factor=scale_factor,
+                per_block=True,
+                blocksize=blocksize
+            )
+    
+    return quantized, superweight_mask, num_superweights
+
+
+def restore_original_weights(
+    quantized_tensor: torch.Tensor,
+    original_tensor: torch.Tensor,
+    superweight_mask: torch.Tensor
+) -> torch.Tensor:
+    """Restore original weight values for superweights while keeping other weights quantized.
+    
+    Args:
+        quantized_tensor: Tensor with quantized weights
+        original_tensor: Tensor with original weights
+        superweight_mask: Boolean mask indicating superweight positions
+        
+    Returns:
+        Tensor with restored superweights
+    """
+    restored = quantized_tensor.clone()
+    restored[superweight_mask] = original_tensor[superweight_mask]
+    return restored
