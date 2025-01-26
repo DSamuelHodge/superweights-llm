@@ -1,6 +1,6 @@
-# SuperWeights: Analyzing Critical Weights in Large Language Models
+# SuperWeights: Discovering Critical Weights in Transformer Models
 
-A Python toolkit for identifying and analyzing superweights in transformer models. Superweights are individual weights that have outsized importance in model behavior, particularly in the down-projection matrices of transformer blocks.
+A Python toolkit for discovering and analyzing critical weights (superweights) in transformer models. This tool helps identify weights that have outsized importance in model behavior, enabling better understanding and optimization of transformer models.
 
 ## Supported Models
 
@@ -14,14 +14,17 @@ The library has been tested with several prominent language models:
 
 ## Features
 
-- **Superweight Detection**: Identify critical weights in transformer models using various criteria
-- **Weight Analysis**: 
-  - Analyze weight distributions and patterns
-  - Quantify weight importance through ablation studies
-  - Track activation patterns and their relationship to superweights
+- **Superweight Discovery**: 
+  - Identify critical weights using magnitude-based analysis
+  - Support for percentage-based or absolute threshold detection
+  - Layer-specific and weight-type-specific analysis
+- **Impact Analysis**: 
+  - Measure the influence of discovered weights on model output
+  - Track activation patterns related to critical weights
+  - Quantify importance through ablation studies
 - **Quantization Tools**:
+  - Intelligent quantization that preserves critical weights
   - Block-wise quantization with multiple methods
-  - Outlier-aware quantization
   - Support for various bit widths (2-8 bits)
 - **Visualization**: Comprehensive tools for visualizing weight distributions and impacts
 - **Model Manipulation**: Tools for experimenting with weight modifications and measuring their effects
@@ -37,19 +40,32 @@ pip install -e .
 ```python
 from superweights.model import TransformerAnalyzer
 
-# Initialize analyzer with a model
+# Initialize analyzer with any transformer model
 analyzer = TransformerAnalyzer("mistralai/Mistral-7B-v0.1")
 
-# Find superweights
+# Discover critical weights using percentage-based analysis
+# This finds the top 0.01% most significant weights by magnitude
 superweights = analyzer.find_superweights(
-    threshold=1e-4,
-    weight_type="down_proj",
+    threshold=0.0001,  # 0.01%
+    weight_type="down_proj",  # Focus on down-projection matrices
     criterion="percentage"
 )
 
-# Evaluate their impact
+# Or discover using absolute threshold
+superweights_abs = analyzer.find_superweights(
+    threshold=0.5,  # Find weights with magnitude > 0.5
+    criterion="absolute"
+)
+
+# Analyze impact of discovered weights
 impact = analyzer.evaluate_impact("Hello, world!", superweights)
-print(f"Impact of superweights: {impact}")
+print(f"Impact metrics of critical weights: {impact}")
+
+# Analyze activations to understand behavior
+activations = analyzer.analyze_activations(
+    text="Hello, world!",
+    layer_indices=[1, 2, 3]  # Analyze specific layers
+)
 ```
 
 ## Project Structure
